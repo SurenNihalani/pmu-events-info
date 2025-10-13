@@ -22,6 +22,7 @@ def main():
             break
     instance_types.sort(key=lambda x: x["InstanceType"])
     instance_types = instance_types
+    not_found_instance_types = []
     exceptions = []
     for instance_type in instance_types:
         ec2_instance_type = instance_type["InstanceType"]
@@ -75,6 +76,7 @@ def main():
             )
         except Exception as e:
             exceptions.append(e)
+            not_found_instance_types.append(ec2_instance_type)
             print(e.response)
             logging.error(f"Error running instance {ec2_instance_type}: {e}")
             continue
@@ -84,6 +86,9 @@ def main():
         time.sleep(2)
     for exception in exceptions:
         logging.error(exception)
+    with open("not_found_instance_types.txt", "w") as f:
+        for instance_type in not_found_instance_types:
+            f.write(instance_type + "\n")
 
 
 if __name__ == "__main__":
