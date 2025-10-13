@@ -18,6 +18,20 @@ class EventType(enum.Enum):
 
 
 @dataclass
+class LscpuCache:
+    name: str
+    one_size: str
+    all_size: str
+    ways: str
+    type: str
+    level: str
+    sets: str
+    phy_line: str
+    coherency_size: str | None = None
+
+
+
+@dataclass
 class Event:
     name: str
     type: EventType
@@ -109,8 +123,40 @@ def parse_gcc_help(data):
     return option_to_value
 
 
+lscpu_pattern = re.compile(r'^([A-Za-z0-9 ()-]+):\s+(.*)$')
+
+
+def parse_lscpu(data):
+    key_to_value: dict[str, str] = {}
+    lines = data.split("\n")
+    for line in lines:
+        if not line.strip():
+            continue
+        match = lscpu_pattern.match(line)
+        if match:
+            key_to_value[match.group(1)] = match.group(2)
+        else:
+            raise ValueError(f"Invalid lscpu line: {line!r}")
+    return key_to_value
+
+def parse_lscpu_cache(data):
+    lines = data.split("\n")
+    first_line = lines[0].split()
+    index_to_column_name = {i: name for i, name in enumerate(first_line)}
+    dataset = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        data = line.split()
+        data = {index_to_column_name[i].lower().replace("-", "_"): value for i, value in enumerate(data)}
+        dataset.append(LscpuCache(**data))
+    return dataset
+
 def main():
     instance_type_to_dataset: dict[str, InstanceTypeDataset] = {}
+    instance_type_to_gcc_help: dict[str, dict[str, str]] = {}
+    instance_type_to_lscpu: dict[str, dict[str, str]] = {}
+    instance_type_to_lscpu_cache: dict[str, list[LscpuCache]] = {}
     for path in pathlib.Path("dataset").glob("**/*.txt"):
         print(path)
         full_path = str(path.absolute()).split("/dataset/")[1]
@@ -124,7 +170,11 @@ def main():
             # print(event_sections)
             instance_type_to_dataset[instance_type] = InstanceTypeDataset(instance_type=instance_type, perf_list=event_sections)
         elif filename == "gcc_help.txt":
-            parse_gcc_help(data)
+            instance_type_to_gcc_help[instance_type] = parse_gcc_help(data)
+        elif filename == "lscpu.txt":
+            instance_type_to_lscpu[instance_type] = parse_lscpu(data)
+        elif filename == "lscpu_c.txt":
+            instance_type_to_lscpu_cache[instance_type] = parse_lscpu_cache(data)
         else:
             print(data)
             raise ValueError(f"Invalid filename: {filename}")
