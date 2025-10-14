@@ -7,12 +7,13 @@ import concurrent.futures
 import threading
 import random
 import traceback
+from collections import OrderedDict
 
 
-INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS = {
-    ('dl',): 192,
-    ('a', 'c', 'd', 'h', 'i', 'm', 'r', 't', 'z'): 384,
-}
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS = OrderedDict()
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('dl',)] = 192
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('a', 'c', 'd', 'h', 'i', 'm', 'r', 't', 'z')] = 384
+
 instance_id_to_budget_consumed = {}
 locker_instance_type_prefixes_to_total_vcpus_budget = threading.Lock()
 subnet_ids = [
