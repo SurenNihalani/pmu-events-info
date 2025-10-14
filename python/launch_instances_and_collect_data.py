@@ -14,7 +14,14 @@ INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS = {
 }
 instance_id_to_budget_consumed = {}
 locker_instance_type_prefixes_to_total_vcpus_budget = threading.Lock()
-
+subnet_ids = [
+    "subnet-004077e406f91a888",
+    "subnet-00d0804a57ea1ab06",
+    "subnet-0905b6b818ef04815",
+    "subnet-08588fb7ec518fe1f",
+    "subnet-0058acf1112279638",
+    "subnet-02664a3434f505201",
+]
 
 def get_index_in_dict(instance_type):
     for prefixes, total_vcpus_budget in INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS.items():
@@ -142,46 +149,55 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
                 else:
                     time.sleep(1)
                     continue
-                response = ec2.run_instances(
-                    # aws ssm get-parameters --names \
-                    # /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
-                    ImageId=image_id,
-                    BlockDeviceMappings=[
-                        {
-                            "DeviceName": "/dev/xvda",
-                            "Ebs": {
-                                "VolumeSize": 20,
-                                "VolumeType": "gp3",
-                                "DeleteOnTermination": True,
-                            },
-                        },
-                    ],
-                    InstanceType=ec2_instance_type,
-                    KeyName="pmu-events-info-key",
-                    SubnetId="subnet-004077e406f91a888",
-                    SecurityGroupIds=["sg-0d7ddef649615c1ce"],
-                    MinCount=1,
-                    MaxCount=1,
-                    IamInstanceProfile={"Name": "pmu-events-info-ec2-s3-profile"},
-                    TagSpecifications=[
-                        {
-                            "ResourceType": "instance",
-                            "Tags": [
+                for subnet_id in subnet_ids:
+                    try:
+                        response = ec2.run_instances(
+                            # aws ssm get-parameters --names \
+                            # /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+                            ImageId=image_id,
+                            BlockDeviceMappings=[
                                 {
-                                    "Key": "Name",
-                                    "Value": "pmu-events-info-ec2-test",
+                                    "DeviceName": "/dev/xvda",
+                                    "Ebs": {
+                                        "VolumeSize": 20,
+                                        "VolumeType": "gp3",
+                                        "DeleteOnTermination": True,
+                                    },
                                 },
                             ],
-                        },
-                    ],
-                    UserData=base64.b64encode(open("user_data.sh", "rb").read()).decode("utf-8"),
-                    InstanceInitiatedShutdownBehavior="terminate",
-                )
-                instance_id_to_budget_consumed[(response["Instances"][0]["InstanceId"], ec2_instance_type)] = total_cores
-                return response
+                            InstanceType=ec2_instance_type,
+                            KeyName="pmu-events-info-key",
+                            SubnetId=subnet_id,
+                            SecurityGroupIds=["sg-0d7ddef649615c1ce"],
+                            MinCount=1,
+                            MaxCount=1,
+                            IamInstanceProfile={"Name": "pmu-events-info-ec2-s3-profile"},
+                            TagSpecifications=[
+                                {
+                                    "ResourceType": "instance",
+                                    "Tags": [
+                                        {
+                                            "Key": "Name",
+                                            "Value": "pmu-events-info-ec2-test",
+                                        },
+                                    ],
+                                },
+                            ],
+                            UserData=base64.b64encode(open("user_data.sh", "rb").read()).decode("utf-8"),
+                            InstanceInitiatedShutdownBehavior="terminate",
+                        )
+                        instance_id_to_budget_consumed[(response["Instances"][0]["InstanceId"], ec2_instance_type)] = total_cores
+                        return response
+                    except Exception as e:
+                        if "Unsupported" in e.args[0]:
+                            continue
+                        else:
+                            break
+                
     except Exception as e:
         print("==================================================")
         print(repr(e.args))
+        
         print("==================================================")
         exceptions_list.append(e)
         not_found_list.append(ec2_instance_type)
