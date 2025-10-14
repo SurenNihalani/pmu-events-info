@@ -10,6 +10,7 @@ import traceback
 
 
 INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS = {
+    ('dl',): 192,
     ('a', 'c', 'd', 'h', 'i', 'm', 'r', 't', 'z'): 384,
 }
 instance_id_to_budget_consumed = {}
