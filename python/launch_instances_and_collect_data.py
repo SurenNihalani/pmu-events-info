@@ -67,7 +67,7 @@ def cleanup_terminated_instances(ec2, logging, stop_event):
                 Filters=[
                     {
                         'Name': 'instance-state-name',
-                        'Values': ['running', 'pending', 'initializing', 'stopping', 'shutting-down']
+                        'Values': ['running', 'pending', 'initializing', 'stopped', 'stopping', 'shutting-down']
                     }
                 ]
             )
