@@ -9,7 +9,7 @@ import random
 import traceback
 
 
-INSTANCE_TYPE_PREFIXES_TO_TOTAL_VCPUS_BUDGET = {
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS = {
     ('a', 'c', 'd', 'h', 'i', 'm', 'r', 't', 'z'): 384,
 }
 instance_id_to_budget_consumed = {}
@@ -17,10 +17,35 @@ locker_instance_type_prefixes_to_total_vcpus_budget = threading.Lock()
 
 
 def get_index_in_dict(instance_type):
-    for prefixes, total_vcpus_budget in INSTANCE_TYPE_PREFIXES_TO_TOTAL_VCPUS_BUDGET.items():
+    for prefixes, total_vcpus_budget in INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS.items():
         if any(instance_type.startswith(prefix) for prefix in prefixes):
             return prefixes
     return None
+
+
+def calculate_available_budget(index_in_dict):
+    """
+    Calculate available vCPU budget for a given instance type prefix.
+    
+    Args:
+        index_in_dict: Tuple of prefixes (e.g., ('a', 'c', 'd', ...))
+    
+    Returns:
+        Available vCPUs remaining for this prefix group
+    """
+    if index_in_dict is None:
+        return float('inf')  # No limit if not tracked
+    
+    max_budget = INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[index_in_dict]
+    
+    # Calculate currently consumed budget from active instances
+    consumed = 0
+    for (instance_id, instance_type), vcpus in instance_id_to_budget_consumed.items():
+        if get_index_in_dict(instance_type) == index_in_dict:
+            consumed += vcpus
+    
+    available = max_budget - consumed
+    return available
 
 
 def cleanup_terminated_instances(ec2, logging, stop_event):
@@ -42,7 +67,7 @@ def cleanup_terminated_instances(ec2, logging, stop_event):
                 Filters=[
                     {
                         'Name': 'instance-state-name',
-                        'Values': ['running', 'pending', 'initializing']
+                        'Values': ['running', 'pending', 'initializing', 'stopping', 'shutting-down']
                     }
                 ]
             )
@@ -62,26 +87,18 @@ def cleanup_terminated_instances(ec2, logging, stop_event):
                 if instance_id not in active_instance_ids:
                     terminated_instances.append((instance_id, instance_type, vcpus))
             logging.info(f"Found {len(terminated_instances)} terminated instances")
-            # Free up budget for terminated instances
+            # Remove terminated instances from tracking (budget will be recalculated automatically)
             freed_budget = 0
-            for instance_id, instance_type, vcpus in terminated_instances:
-                # Remove from tracking
-                
-                # Add budget back to the pool
-                # We need to determine which prefix this instance belonged to
-                # Since we don't have the instance type here, we'll add to the general pool
-                index_in_dict = get_index_in_dict(instance_type)
-                with locker_instance_type_prefixes_to_total_vcpus_budget:
-                    
-                    INSTANCE_TYPE_PREFIXES_TO_TOTAL_VCPUS_BUDGET[index_in_dict] += vcpus
+            with locker_instance_type_prefixes_to_total_vcpus_budget:
+                for instance_id, instance_type, vcpus in terminated_instances:
                     del instance_id_to_budget_consumed[(instance_id, instance_type)]
                     freed_budget += vcpus
                     logging.info(f"Freed {vcpus} vCPUs for terminated instance {instance_id}")
 
-                if terminated_instances:
-                    logging.info(f"Cleaned up {len(terminated_instances)} terminated instances, freed {freed_budget} vCPUs")
-                else:
-                    logging.info("No terminated instances to clean up")
+            if terminated_instances:
+                logging.info(f"Cleaned up {len(terminated_instances)} terminated instances, freed {freed_budget} vCPUs")
+            else:
+                logging.info("No terminated instances to clean up")
 
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
@@ -99,7 +116,6 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
     total_cores = instance_type["VCpuInfo"]["DefaultVCpus"]
     ec2_instance_type = instance_type["InstanceType"]
     index_in_dict = get_index_in_dict(instance_type["InstanceType"])
-    to_add = 0
     try:
         architecture = instance_type["ProcessorInfo"]["SupportedArchitectures"][0]
         if architecture == "arm64":
@@ -118,51 +134,55 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
         while index_in_dict is not None:
             logging.info(f"Waiting for {ec2_instance_type} to be available")
             with locker_instance_type_prefixes_to_total_vcpus_budget:
-                total_vcpus_budget = INSTANCE_TYPE_PREFIXES_TO_TOTAL_VCPUS_BUDGET[index_in_dict]
-                if total_vcpus_budget >= total_cores:
-                    INSTANCE_TYPE_PREFIXES_TO_TOTAL_VCPUS_BUDGET[index_in_dict] -= total_cores
-                    to_add = total_cores
-                    break
-            time.sleep(random.randint(1, 10))
-        response = ec2.run_instances(
-            # aws ssm get-parameters --names \
-            # /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
-            ImageId=image_id,
-            BlockDeviceMappings=[
-                {
-                    "DeviceName": "/dev/xvda",
-                    "Ebs": {
-                        "VolumeSize": 20,
-                        "VolumeType": "gp3",
-                        "DeleteOnTermination": True,
-                    },
-                },
-            ],
-            InstanceType=ec2_instance_type,
-            KeyName="pmu-events-info-key",
-            SubnetId="subnet-004077e406f91a888",
-            SecurityGroupIds=["sg-0d7ddef649615c1ce"],
-            MinCount=1,
-            MaxCount=1,
-            IamInstanceProfile={"Name": "pmu-events-info-ec2-s3-profile"},
-            TagSpecifications=[
-                {
-                    "ResourceType": "instance",
-                    "Tags": [
+                available_budget = calculate_available_budget(index_in_dict)
+                logging.info(f"Available budget for {ec2_instance_type}: {available_budget} vCPUs (need {total_cores})")
+                logging.info(f"Current consumption: {instance_id_to_budget_consumed}")
+                if available_budget >= total_cores:
+                    logging.info(f"Sufficient budget available, proceeding with instance launch")
+                else:
+                    time.sleep(1)
+                    continue
+                response = ec2.run_instances(
+                    # aws ssm get-parameters --names \
+                    # /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+                    ImageId=image_id,
+                    BlockDeviceMappings=[
                         {
-                            "Key": "Name",
-                            "Value": "pmu-events-info-ec2-test",
+                            "DeviceName": "/dev/xvda",
+                            "Ebs": {
+                                "VolumeSize": 20,
+                                "VolumeType": "gp3",
+                                "DeleteOnTermination": True,
+                            },
                         },
                     ],
-                },
-            ],
-            UserData=base64.b64encode(open("user_data.sh", "rb").read()).decode("utf-8"),
-            InstanceInitiatedShutdownBehavior="terminate",
-        )
-        instance_id_to_budget_consumed[(response["Instances"][0]["InstanceId"], ec2_instance_type)] = total_cores
-        return response
-
+                    InstanceType=ec2_instance_type,
+                    KeyName="pmu-events-info-key",
+                    SubnetId="subnet-004077e406f91a888",
+                    SecurityGroupIds=["sg-0d7ddef649615c1ce"],
+                    MinCount=1,
+                    MaxCount=1,
+                    IamInstanceProfile={"Name": "pmu-events-info-ec2-s3-profile"},
+                    TagSpecifications=[
+                        {
+                            "ResourceType": "instance",
+                            "Tags": [
+                                {
+                                    "Key": "Name",
+                                    "Value": "pmu-events-info-ec2-test",
+                                },
+                            ],
+                        },
+                    ],
+                    UserData=base64.b64encode(open("user_data.sh", "rb").read()).decode("utf-8"),
+                    InstanceInitiatedShutdownBehavior="terminate",
+                )
+                instance_id_to_budget_consumed[(response["Instances"][0]["InstanceId"], ec2_instance_type)] = total_cores
+                return response
     except Exception as e:
+        print("==================================================")
+        print(repr(e.args))
+        print("==================================================")
         exceptions_list.append(e)
         not_found_list.append(ec2_instance_type)
         logging.error(f"Error running instance {ec2_instance_type}: {e}")
