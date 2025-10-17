@@ -56,12 +56,12 @@ class InstanceType:
 
     @staticmethod
     def from_instance_type(instance_type):
-        regex = re.compile(r"^(?P<series>[a-z]+)(?P<generation>\d+)(?P<options>[a-z0-9-]+)?\.(?P<instance_size>[a-z0-9-]+)?$")
+        regex = re.compile(r"^(?P<series>[a-z]+)(?P<generation>\d+)?(?P<options>[a-z0-9-]+)?\.(?P<instance_size>[a-z0-9-]+)?$")
         match = regex.match(instance_type)
         if not match:
             raise ValueError(f"Invalid instance type: {instance_type}")
         series = match.group("series")
-        generation = int(match.group("generation"))
+        generation = int(match.group("generation") or 0)
         options = match.group("options")
         instance_size = match.group("instance_size")
         return InstanceType(series=series, generation=generation, options=options, instance_size=instance_size)
@@ -176,9 +176,14 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
             return None
 
         logging.info(f"Running instance {ec2_instance_type} with image {image_id}")
+        assert index_in_dict is not None
         while index_in_dict is not None:
             logging.info(f"Waiting for {ec2_instance_type} to be available")
             with locker_instance_type_prefixes_to_total_vcpus_budget:
+                max_budget = INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[index_in_dict]
+                if max_budget < total_cores:
+                    logging.error(f"Not enough budget available for {ec2_instance_type}")
+                    break
                 available_budget = calculate_available_budget(index_in_dict)
                 logging.info(f"Available budget for {ec2_instance_type}: {available_budget} vCPUs (need {total_cores})")
                 logging.info(f"Current consumption: {instance_id_to_budget_consumed}")
@@ -236,6 +241,9 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
                             break
                         else:
                             break
+                else:
+                    logging.error(f"All subnets are full for {ec2_instance_type}")
+                    break
                 
     except Exception as e:
         print("==================================================")
@@ -295,7 +303,6 @@ def main():
                 response = future.result()
                 if response and "Instances" in response:
                     pprint(response["Instances"])
-                time.sleep(2)  # Rate limiting between instances
             except Exception as exc:
                 traceback.print_exc()
                 logging.error(f'{instance_type} generated an exception: {exc}')
