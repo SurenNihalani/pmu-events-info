@@ -9,10 +9,16 @@ import random
 import traceback
 from collections import OrderedDict
 
+import re
+from dataclasses import dataclass
 
 INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS = OrderedDict()
 INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('dl',)] = 192
 INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('a', 'c', 'd', 'h', 'i', 'm', 'r', 't', 'z')] = 384
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('g', 'g5', 'g4',)] = 64
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('f',)] = 192
+BANNED_INSTANCE_TYPES = ["f1.4xlarge", "f1.2xlarge", "f1.16xlarge", "f1.8xlarge", "f2.12xlarge", "f2.48xlarge", "f2.6xlarge"]
+# BANNED_INSTANCE_TYPES = []
 
 instance_id_to_budget_consumed = {}
 locker_instance_type_prefixes_to_total_vcpus_budget = threading.Lock()
@@ -24,12 +30,42 @@ subnet_ids = [
     "subnet-0058acf1112279638",
     "subnet-02664a3434f505201",
 ]
+# subnet_ids = [
+#     "subnet-0a7c5108b4d7d6703",
+#     "subnet-0a62d78eeb906cc6d",
+#     "subnet-027d549f2b446b68d",
+#     "subnet-0e5f9982266e10c94",
+#     "subnet-02a36836727e603af",
+#     "subnet-091d9e6b2975a1569",
+# ]
 
 def get_index_in_dict(instance_type):
     for prefixes, total_vcpus_budget in INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS.items():
-        if any(instance_type.startswith(prefix) for prefix in prefixes):
+        if InstanceType.from_instance_type(instance_type).series in prefixes:
             return prefixes
-    return None
+    return ("default",)
+
+
+@dataclass
+class InstanceType:
+    series: str
+    generation: int
+    options: str
+    instance_size: str
+
+
+    @staticmethod
+    def from_instance_type(instance_type):
+        regex = re.compile(r"^(?P<series>[a-z]+)(?P<generation>\d+)(?P<options>[a-z]+)?\.(?P<instance_size>[a-z0-9]+)?$")
+        match = regex.match(instance_type)
+        if not match:
+            raise ValueError(f"Invalid instance type: {instance_type}")
+        series = match.group("series")
+        generation = int(match.group("generation"))
+        options = match.group("options")
+        instance_size = match.group("instance_size")
+        return InstanceType(series=series, generation=generation, options=options, instance_size=instance_size)
+
 
 
 def calculate_available_budget(index_in_dict):
@@ -43,7 +79,7 @@ def calculate_available_budget(index_in_dict):
         Available vCPUs remaining for this prefix group
     """
     if index_in_dict is None:
-        return float('inf')  # No limit if not tracked
+        return 10000
     
     max_budget = INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[index_in_dict]
     
@@ -88,7 +124,7 @@ def cleanup_terminated_instances(ec2, logging, stop_event):
                     active_instance_ids.add(instance['InstanceId'])
 
             logging.info(f"Found {len(active_instance_ids)} active instances")
-
+    
             # Find terminated instances (those in our tracking but not active)
             # instance_id_to_budget_consumed has (instance_id, instance_type) as keys
             terminated_instances = []
@@ -152,6 +188,7 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
                     time.sleep(1)
                     continue
                 for subnet_id in subnet_ids:
+                    logging.info(f"Launching instance {ec2_instance_type} in subnet {subnet_id}")
                     try:
                         response = ec2.run_instances(
                             # aws ssm get-parameters --names \
@@ -191,8 +228,12 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
                         instance_id_to_budget_consumed[(response["Instances"][0]["InstanceId"], ec2_instance_type)] = total_cores
                         return response
                     except Exception as e:
+                        logging.error(f"Error launching instance {ec2_instance_type} in subnet {subnet_id}: {e}")
+                        traceback.print_exc()
                         if "Unsupported" in e.args[0]:
                             continue
+                        elif "your current vCPU limit of 0" in e.args[0]:
+                            break
                         else:
                             break
                 
@@ -238,8 +279,9 @@ def main():
     cleanup_thread.start()
     logging.info("Started cleanup thread")
 
+ 
     # Use ThreadPoolExecutor for parallel execution
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1023) as executor:
         # Submit all tasks
         future_to_instance = {
             executor.submit(process_instance_type, instance_type, ec2, s3, logging, exceptions, not_found_instance_types): instance_type
