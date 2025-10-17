@@ -56,7 +56,7 @@ class InstanceType:
 
     @staticmethod
     def from_instance_type(instance_type):
-        regex = re.compile(r"^(?P<series>[a-z]+)(?P<generation>\d+)(?P<options>[a-z]+)?\.(?P<instance_size>[a-z0-9]+)?$")
+        regex = re.compile(r"^(?P<series>[a-z]+)(?P<generation>\d+)(?P<options>[a-z0-9-]+)?\.(?P<instance_size>[a-z0-9-]+)?$")
         match = regex.match(instance_type)
         if not match:
             raise ValueError(f"Invalid instance type: {instance_type}")
