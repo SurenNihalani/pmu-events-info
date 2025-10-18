@@ -15,9 +15,9 @@ from dataclasses import dataclass
 INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS = OrderedDict()
 INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('dl',)] = 192
 INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('a', 'c', 'd', 'h', 'i', 'm', 'r', 't', 'z')] = 384
-INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('g', 'g5', 'g4',)] = 64
-INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('f',)] = 192
-BANNED_INSTANCE_TYPES = ["f1.4xlarge", "f1.2xlarge", "f1.16xlarge", "f1.8xlarge", "f2.12xlarge", "f2.48xlarge", "f2.6xlarge"]
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('g',)] = 64
+INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('f',)] = 8
+# BANNED_INSTANCE_TYPES = ["f1.4xlarge", "f1.2xlarge", "f1.16xlarge", "f1.8xlarge", "f2.12xlarge", "f2.48xlarge", "f2.6xlarge"]
 # BANNED_INSTANCE_TYPES = []
 
 instance_id_to_budget_consumed = {}
