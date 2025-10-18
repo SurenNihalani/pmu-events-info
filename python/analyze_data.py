@@ -43,9 +43,20 @@ class Event:
     description: str | None = None
     is_precise: bool = False
 
-    def __post_init__(self):
-        if self.description and any(substring in self.description.replace("\n", " ") for substring in PRECISE_SUBSTRINGS):
+
+    def set_is_precise_if_necessary(self):
+        if self.description is not None and any(substring in self.description.replace("\n", " ").replace("  ", " ") for substring in PRECISE_SUBSTRINGS):
             self.is_precise = True
+
+    def __post_init__(self):
+        self.set_is_precise_if_necessary()
+
+    def update_description(self, description: str):
+        if self.description is None:
+            self.description = description
+        else:
+            self.description += "\n" + description
+        self.set_is_precise_if_necessary()
 
 
 @dataclass
@@ -69,9 +80,9 @@ def parse_header_events(lines):
             if line.startswith("    "):
                 last_event = events[-1]
                 if last_event.description is None:
-                    last_event.description = line.strip()
+                    last_event.update_description(line.strip())
                 else:
-                    last_event.description += "\n" + line.strip()
+                    last_event.update_description("\n" + line.strip())
                 continue
             match = event_pattern.match(line)
             if match:
@@ -226,6 +237,7 @@ def main():
     
     event_name_to_instance_type = defaultdict(set)
     instance_type_to_tma_events = defaultdict(set)
+    instance_type_to_precise_events = defaultdict(set)
     for instance_type in instance_type_to_dataset:
         for event_section in instance_type_to_dataset[instance_type].perf_list:
             for event in event_section.events:
@@ -233,6 +245,12 @@ def main():
                 event_name_to_instance_type[event.name].add(instance_type)
                 if event.name.startswith("tma"):
                     instance_type_to_tma_events[instance_type].add(event.name)
+                if event.is_precise:
+                    instance_type_to_precise_events[instance_type].add(event.name)
+    instance_type_to_precise_events_list = sorted(instance_type_to_precise_events.items(), key=lambda x: len(x[1]), reverse=True)
+    instance_type_to_precise_events_list = [ (k, len(v), sorted(list(set(v)))) for k, v in instance_type_to_precise_events_list ]
+    with open("instance_type_to_precise_events_list.txt", "w") as f:
+        f.write(pprint.pformat(instance_type_to_precise_events_list) + "\n")
     how_many_to_print_instance_types = 0
     for i, (k, v) in enumerate(instance_type_to_event_count.most_common(10000)):
         if k.startswith("g"):

@@ -6,5 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.40.50",
+    "ipdb>=0.13.13",
     "pytest>=8.4.2",
 ]
