@@ -2,7 +2,10 @@ import pathlib
 import re
 from dataclasses import dataclass, field
 import enum
-
+import dataclasses
+import json
+from collections import Counter, defaultdict
+import pprint
 event_pattern = re.compile(r'^[ ]+([a-zA-Z0-9/=<>:,\[\]._ -]+)([ ]+(\[([a-zA-Z ]+)\])?)?$')
 section_header_pattern = re.compile(r'^([A-Za-z0-9]+):\s*(.*)$')
 gcc_help_option_pattern = re.compile(r'^  -m([a-zA-Z0-9-<,>=\.]+)[=]?\s+(.*)$')
@@ -28,7 +31,9 @@ class LscpuCache:
     sets: str
     phy_line: str
     coherency_size: str | None = None
+    
 
+PRECISE_SUBSTRINGS = ["Precise event"]
 
 
 @dataclass
@@ -36,6 +41,11 @@ class Event:
     name: str
     type: EventType
     description: str | None = None
+    is_precise: bool = False
+
+    def __post_init__(self):
+        if self.description and any(substring in self.description.replace("\n", " ") for substring in PRECISE_SUBSTRINGS):
+            self.is_precise = True
 
 
 @dataclass
@@ -48,7 +58,9 @@ class EventSection:
 class InstanceTypeDataset:
     instance_type: str
     perf_list: list[EventSection]
-
+    gcc_help: dict[str, str]
+    lscpu: dict[str, str]
+    lscpu_cache: list[LscpuCache]
 
 def parse_header_events(lines):
     events = []
@@ -102,8 +114,6 @@ def parse_perf_list(data):
             event_sections.append(EventSection(section_name=section_name, description=description, events=events))
         else:
             raise ValueError(f"Invalid section: {section}")
-        # print("=================================")
-        # print(section)
     return event_sections
 
 
@@ -152,23 +162,31 @@ def parse_lscpu_cache(data):
         dataset.append(LscpuCache(**data))
     return dataset
 
+def encode_value(x):
+    if dataclasses.is_dataclass(x):
+        return dataclasses.asdict(x)
+    if isinstance(x, enum.Enum):
+        return x.value
+    raise ValueError(f"Invalid value: {x!r}")
+
+
 def main():
     instance_type_to_dataset: dict[str, InstanceTypeDataset] = {}
     instance_type_to_gcc_help: dict[str, dict[str, str]] = {}
     instance_type_to_lscpu: dict[str, dict[str, str]] = {}
     instance_type_to_lscpu_cache: dict[str, list[LscpuCache]] = {}
+    all_instance_types = set()  
     for path in pathlib.Path("dataset").glob("**/*.txt"):
-        print(path)
         full_path = str(path.absolute()).split("/dataset/")[1]
         instance_type = full_path.split("/")[0]
         filename = full_path.split("/")[1]
+        all_instance_types.add(instance_type)
         with open(path, "r") as f:
             data = f.read()
         if filename == "perf_list.txt":
-            print(instance_type)
             event_sections: list[EventSection] = parse_perf_list(data)
             # print(event_sections)
-            instance_type_to_dataset[instance_type] = InstanceTypeDataset(instance_type=instance_type, perf_list=event_sections)
+            instance_type_to_dataset[instance_type] = InstanceTypeDataset(instance_type=instance_type, perf_list=event_sections, gcc_help={}, lscpu={}, lscpu_cache=[])
         elif filename == "gcc_help.txt":
             instance_type_to_gcc_help[instance_type] = parse_gcc_help(data)
         elif filename == "lscpu.txt":
@@ -176,10 +194,65 @@ def main():
         elif filename == "lscpu_c.txt":
             instance_type_to_lscpu_cache[instance_type] = parse_lscpu_cache(data)
         else:
-            print(data)
             raise ValueError(f"Invalid filename: {filename}")
         # print(data[:100])
         # print(data)
-
+    bad_instance_types = []
+    for instance_type in all_instance_types:
+        if instance_type not in instance_type_to_dataset:
+            print(f"Instance type {instance_type} not found")
+            bad_instance_types.append(instance_type)
+            continue
+        if instance_type not in instance_type_to_gcc_help:
+            print(f"Instance type {instance_type} not found")
+            bad_instance_types.append(instance_type)
+            continue
+        if instance_type not in instance_type_to_lscpu:
+            print(f"Instance type {instance_type} not found")
+            bad_instance_types.append(instance_type)
+            continue
+        if instance_type not in instance_type_to_lscpu_cache:
+            print(f"Instance type {instance_type} not found")
+            bad_instance_types.append(instance_type)
+            continue
+        instance_type_to_dataset[instance_type] = InstanceTypeDataset(
+            instance_type=instance_type, 
+            perf_list=instance_type_to_dataset[instance_type].perf_list, 
+            gcc_help=instance_type_to_gcc_help[instance_type], 
+            lscpu=instance_type_to_lscpu[instance_type], 
+            lscpu_cache=instance_type_to_lscpu_cache[instance_type]
+        )
+    instance_type_to_event_count = Counter()
+    
+    event_name_to_instance_type = defaultdict(set)
+    instance_type_to_tma_events = defaultdict(set)
+    for instance_type in instance_type_to_dataset:
+        for event_section in instance_type_to_dataset[instance_type].perf_list:
+            for event in event_section.events:
+                instance_type_to_event_count[instance_type] += 1
+                event_name_to_instance_type[event.name].add(instance_type)
+                if event.name.startswith("tma"):
+                    instance_type_to_tma_events[instance_type].add(event.name)
+    how_many_to_print_instance_types = 0
+    for i, (k, v) in enumerate(instance_type_to_event_count.most_common(10000)):
+        if k.startswith("g"):
+            how_many_to_print_instance_types = i + 1
+            break
+    pprint.pprint(instance_type_to_event_count.most_common(how_many_to_print_instance_types))
+    event_name_to_instance_type_sorted = sorted(event_name_to_instance_type.items(), key=lambda x: len(x[1]), reverse=True)
+    event_name_to_instance_type_sorted = [
+        (k, v) for k, v in event_name_to_instance_type_sorted if k.startswith("tma")
+    ]
+    with open("event_name_to_instance_type_sorted.txt", "w") as f:
+        f.write(pprint.pformat(event_name_to_instance_type_sorted) + "\n")
+    instance_type_to_tma_event_count = Counter()
+    with open("tma_events.txt", "w") as f:
+        for instance_type, events in instance_type_to_tma_events.items():
+            instance_type_to_tma_event_count[instance_type] += len(events)
+            f.write(pprint.pformat((instance_type, len(events), events)) + "\n")
+    with open("instance_type_dataset.json", "w") as f:
+        json.dump(instance_type_to_dataset, f, default=encode_value, indent=2)
+        
+    pprint.pprint(instance_type_to_tma_event_count.most_common(200))
 if __name__ == "__main__":
     main()
