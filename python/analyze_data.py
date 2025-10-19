@@ -6,6 +6,9 @@ import dataclasses
 import json
 from collections import Counter, defaultdict
 import pprint
+import csv
+
+
 event_pattern = re.compile(r'^[ ]+([a-zA-Z0-9/=<>:,\[\]._ -]+)([ ]+(\[([a-zA-Z ]+)\])?)?$')
 section_header_pattern = re.compile(r'^([A-Za-z0-9]+):\s*(.*)$')
 gcc_help_option_pattern = re.compile(r'^  -m([a-zA-Z0-9-<,>=\.]+)[=]?\s+(.*)$')
@@ -182,6 +185,17 @@ def encode_value(x):
 
 
 def main():
+    instance_type_to_cost = {}
+    with open("vantage.csv", "r") as f:
+        vantages = csv.DictReader(f)
+        all_rows = list(vantages)
+    for row in all_rows:
+        try:
+            instance_type_to_cost[row["API Name"]] = float(row["On Demand"].replace("$", "").replace(" hourly", ""))
+        except ValueError:
+            continue
+    from ipdb import set_trace
+    # set_trace()
     instance_type_to_dataset: dict[str, InstanceTypeDataset] = {}
     instance_type_to_gcc_help: dict[str, dict[str, str]] = {}
     instance_type_to_lscpu: dict[str, dict[str, str]] = {}
@@ -247,8 +261,9 @@ def main():
                     instance_type_to_tma_events[instance_type].add(event.name)
                 if event.is_precise:
                     instance_type_to_precise_events[instance_type].add(event.name)
-    instance_type_to_precise_events_list = sorted(instance_type_to_precise_events.items(), key=lambda x: len(x[1]), reverse=True)
-    instance_type_to_precise_events_list = [ (k, len(v), sorted(list(set(v)))) for k, v in instance_type_to_precise_events_list ]
+        
+    instance_type_to_precise_events_list = sorted(instance_type_to_precise_events.items(), key=lambda x: (len(x[1]), -instance_type_to_cost[x[0]]), reverse=True)
+    instance_type_to_precise_events_list = [ (k, len(v), instance_type_to_cost[k], sorted(list(set(v)))) for k, v in instance_type_to_precise_events_list ]
     with open("instance_type_to_precise_events_list.txt", "w") as f:
         f.write(pprint.pformat(instance_type_to_precise_events_list) + "\n")
     how_many_to_print_instance_types = 0
@@ -257,7 +272,7 @@ def main():
             how_many_to_print_instance_types = i + 1
             break
     pprint.pprint(instance_type_to_event_count.most_common(how_many_to_print_instance_types))
-    event_name_to_instance_type_sorted = sorted(event_name_to_instance_type.items(), key=lambda x: len(x[1]), reverse=True)
+    event_name_to_instance_type_sorted = sorted(event_name_to_instance_type.items(), key=lambda x: (len(x[1])), reverse=True)
     event_name_to_instance_type_sorted = [
         (k, v) for k, v in event_name_to_instance_type_sorted if k.startswith("tma")
     ]
@@ -265,9 +280,14 @@ def main():
         f.write(pprint.pformat(event_name_to_instance_type_sorted) + "\n")
     instance_type_to_tma_event_count = Counter()
     with open("tma_events.txt", "w") as f:
+        dataset = []
         for instance_type, events in instance_type_to_tma_events.items():
             instance_type_to_tma_event_count[instance_type] += len(events)
-            f.write(pprint.pformat((instance_type, len(events), events)) + "\n")
+            dataset.append((instance_type, len(events), instance_type_to_cost[instance_type], events))
+        dataset = sorted(dataset, key=lambda x: (x[1], -instance_type_to_cost[x[0]]), reverse=True)
+        for instance_type, count, cost, events in dataset:
+            f.write(pprint.pformat((instance_type, count, cost, events)) + "\n")
+        f.close()
     with open("instance_type_dataset.json", "w") as f:
         json.dump(instance_type_to_dataset, f, default=encode_value, indent=2)
         
