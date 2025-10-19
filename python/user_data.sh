@@ -22,8 +22,15 @@ sudo apt install -y gcc
 sudo bash -c "gcc -march=native -Q --help=target" > gcc_help.txt
 sudo lscpu > lscpu.txt
 sudo lscpu -C > lscpu_c.txt
+sudo bash -c "echo 0 > /proc/sys/kernel/perf_event_paranoid"
+sudo bash -c "echo 0 > /proc/sys/kernel/kptr_restrict"
+sudo bash -c "echo 0 > /proc/sys/kernel/nmi_watchdog"
+sudo bash -c "2>&1 perf stat ls" > perf_stat_ls.txt
+sudo bash -c "2>&1 perf stat -M TopdownL1 ls" > perf_stat_topdownl1_ls.txt
 aws s3 cp perf_list.txt s3://suren-terraform/pmu_data/${instance_type}/perf_list.txt
 aws s3 cp gcc_help.txt s3://suren-terraform/pmu_data/${instance_type}/gcc_help.txt
 aws s3 cp lscpu.txt s3://suren-terraform/pmu_data/${instance_type}/lscpu.txt
 aws s3 cp lscpu_c.txt s3://suren-terraform/pmu_data/${instance_type}/lscpu_c.txt
+aws s3 cp perf_stat_ls.txt s3://suren-terraform/pmu_data/${instance_type}/perf_stat_ls.txt
+aws s3 cp perf_stat_topdownl1_ls.txt s3://suren-terraform/pmu_data/${instance_type}/perf_stat_topdownl1_ls.txt
 sudo shutdown now

@@ -1,5 +1,5 @@
 import boto3
-from pprint import pprint
+from pprint import pprint, pformat
 import time
 import logging
 import base64
@@ -8,6 +8,7 @@ import threading
 import random
 import traceback
 from collections import OrderedDict
+from datetime import datetime, timedelta, UTC
 
 import re
 from dataclasses import dataclass
@@ -23,12 +24,12 @@ INSTANCE_TYPE_PREFIXES_TO_MAX_VCPUS[('f',)] = 8
 instance_id_to_budget_consumed = {}
 locker_instance_type_prefixes_to_total_vcpus_budget = threading.Lock()
 subnet_ids = [
-    "subnet-004077e406f91a888",
-    "subnet-00d0804a57ea1ab06",
-    "subnet-0905b6b818ef04815",
-    "subnet-08588fb7ec518fe1f",
-    "subnet-0058acf1112279638",
-    "subnet-02664a3434f505201",
+    "subnet-05743451e873969fe",
+    "subnet-0fcf341c10d2ed789",
+    "subnet-03f444f6a673fe821",
+    "subnet-04a2cbbfeecc2c221",
+    "subnet-0c816e981365f72a0",
+    "subnet-027fec41c7e750b8c",
 ]
 # subnet_ids = [
 #     "subnet-0a7c5108b4d7d6703",
@@ -113,14 +114,24 @@ def cleanup_terminated_instances(ec2, logging, stop_event):
                     {
                         'Name': 'instance-state-name',
                         'Values': ['running', 'pending', 'initializing', 'stopped', 'stopping', 'shutting-down']
+                    },
+                    {
+                        'Name': 'tag:Name',
+                        'Values': ['pmu-events-info-ec2-test'],
                     }
                 ]
             )
 
             # Extract active instance IDs (store as set of just IDs for comparison)
             active_instance_ids = set()
+            logging.info(f"Response: {pformat(response)}")
             for reservation in response['Reservations']:
                 for instance in reservation['Instances']:
+                    if instance['LaunchTime'] < datetime.now(UTC) - timedelta(minutes=10) and instance['State']['Name'] == 'running':
+                        logging.info(f"Instance {instance['InstanceId']} is older than 10 minutes, skipping")
+                        ec2.terminate_instances(InstanceIds=[instance['InstanceId']])
+                        logging.info(f"Terminated instance {instance['InstanceId']}")
+                        continue
                     active_instance_ids.add(instance['InstanceId'])
 
             logging.info(f"Found {len(active_instance_ids)} active instances")
@@ -170,11 +181,14 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
         else:
             exceptions_list.append(f"Unsupported architecture: {architecture}")
             return None
-
-        if s3.list_objects_v2(Bucket="suren-terraform", Prefix=f"pmu_data/{ec2_instance_type}")["KeyCount"] > 0:
-            logging.info(f"Instance {ec2_instance_type} already exists")
-            return None
-
+        try:
+            response =s3.list_objects_v2(Bucket="suren-terraform", Prefix=f"pmu_data/{ec2_instance_type}")
+            if response["KeyCount"] > 0:
+                logging.info(f"Instance {ec2_instance_type} already exists")
+                return None
+        except Exception as e:
+            logging.error(f"Error listing objects in S3: {e}")
+            traceback.print_exc()
         logging.info(f"Running instance {ec2_instance_type} with image {image_id}")
         assert index_in_dict is not None
         while index_in_dict is not None:
@@ -246,9 +260,9 @@ def process_instance_type(instance_type, ec2, s3, logging, exceptions_list, not_
                     break
                 
     except Exception as e:
-        print("==================================================")
+        print("==================================================SUREN")
         print(repr(e.args))
-        
+        print(traceback.format_exc())
         print("==================================================")
         exceptions_list.append(e)
         not_found_list.append(ec2_instance_type)
@@ -289,7 +303,7 @@ def main():
 
  
     # Use ThreadPoolExecutor for parallel execution
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1023) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         # Submit all tasks
         future_to_instance = {
             executor.submit(process_instance_type, instance_type, ec2, s3, logging, exceptions, not_found_instance_types): instance_type
@@ -321,5 +335,5 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     main()
